@@ -146,7 +146,7 @@
   <text x="272" y="860" class="cap">each review reports fewer findings than the one before, and no</text>
 <text x="272" y="879" class="cap">finding is reported by three reviews in a row; else blocked (reason)</text>
 <text x="272" y="898" class="cap">a finding <tspan class="tb">class</tspan> back after its fix → one <tspan class="tb">redesign</tspan> (Opus/high); back again → owner</text>
-<text x="272" y="917" class="cap"><tspan class="tb">ESCALATE</tspan> → one step up the ladder, once; then blocked</text>
+<text x="272" y="917" class="cap"><tspan class="tb">ESCALATE</tspan> → one step up, once; at the ceiling one Opus/high decides</text>
 <text x="272" y="936" class="cap">past its <tspan class="tb">step budget</tspan> → handoff: WIP commit, then a fresh worker</text>
 <text x="272" y="955" class="cap">of the same tier goes on while each brings a commit (≤ 5 per step)</text>
   <line x1="272" y1="982" x2="714" y2="982" class="rule"/>

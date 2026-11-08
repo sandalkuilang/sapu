@@ -836,9 +836,11 @@ describe("loadContract and the CLI", () => {
     expect(Object.keys(w)).toEqual(["main", "pluginRoot", "profiles", "contract"]);
     expect(w.pluginRoot).toMatch(/plugins\/sapu$/);
     expect(w.contract).not.toHaveProperty("guard");
-    expect(w.contract).toMatchObject({ scoutTier: "sonnet-high", riskScoutTier: "opus-medium" });
+    expect(w.contract).toMatchObject({ scoutTier: "sonnet-high", riskScoutTier: "opus-medium", ceilingDecider: "opus-high" });
     commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, tuning: { riskScoutTier: "off" } }) });
     expect(JSON.parse(run("wave-args")).contract.riskScoutTier).toBe("off");
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, tuning: { ceilingDecider: "off" } }) });
+    expect(JSON.parse(run("wave-args")).contract.ceilingDecider).toBe("off");
   });
 
   it("`wave-args` refuses a gate.diff the guard would refuse every worker (judged by the guard itself)", () => {
@@ -1610,9 +1612,9 @@ describe("tuning: what the engine derives from the machine and the model, and wh
 
   it("the step budget and the context limits default and follow `tuning`; the limits are fractions of the context window, at most contextCap tokens", () => {
     const d = resolveTuning(FIXTURE_CONTRACT);
-    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 1_000_000, contextLimits: { session: 350_000, phaseA: 221_053 }, contextCap: 350_000 });
+    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", ceilingDecider: "opus-high", contextWindow: 1_000_000, contextLimits: { session: 350_000, phaseA: 221_053 }, contextCap: 350_000 });
     const t = resolveTuning({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 60, every: 10 }, contextBudget: { soft: 90_000 }, contextWindow: 200_000 } });
-    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 200_000, contextLimits: { session: 190_000, phaseA: 120_000 }, contextCap: 350_000 });
+    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", ceilingDecider: "opus-high", contextWindow: 200_000, contextLimits: { session: 190_000, phaseA: 120_000 }, contextCap: 350_000 });
     expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.3 } } }).contextLimits).toEqual({ session: 300_000, phaseA: 600_000 });
     expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextCap: null } }).contextLimits).toEqual({ session: 950_000, phaseA: 600_000 });
     expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextCap: 500_000 } })).toMatchObject({ contextLimits: { session: 500_000, phaseA: 315_789 }, contextCap: 500_000 });
@@ -1634,6 +1636,7 @@ describe("tuning: what the engine derives from the machine and the model, and wh
     [{ scoutTier: "sapu:sapu-haiku-medium" }, /tuning\.scoutTier must be "sonnet-high"/],
     [{ riskScoutTier: "opus-high" }, /tuning\.riskScoutTier must be "opus-medium" \(default\) or "off"/],
     [{ riskScoutTier: "sonnet-high" }, /tuning\.riskScoutTier must be "opus-medium" \(default\) or "off"/],
+    [{ ceilingDecider: "opus-medium" }, /tuning\.ceilingDecider must be "opus-high" \(default\) or "off"/],
     [{ reviewEffort: "low" }, /tuning\.reviewEffort must be "medium" or "high"/],
     [{ reviewEffort: 5 }, /tuning\.reviewEffort must be "medium" or "high"/],
     [{ codeSearchFirst: { refusals: -1 } }, /tuning\.codeSearchFirst\.refusals must be a whole number/],

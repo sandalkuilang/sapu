@@ -9,7 +9,7 @@
 # comment is still mandatory.
 #
 # USAGE (from the main checkout or any of its worktrees)
-#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--dry-run]
+#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--gate-change "<steps>: <why>"] [--dry-run]
 #   sapu-merge.sh <PR> --alone [--workers N]
 #
 #   <review-comment-file>  the A3.5 review summary; must contain the literal heading
@@ -30,7 +30,10 @@
 #   --closes <N>|none      the lane's issue (from sapu-wave.js's result), or `none` for a tracker-finding lane (it uses Refs).
 #                          The merge is refused, before the gate, unless the issues the PR closes (pr-trust's `closes`) are
 #                          exactly {N} ({} for none). Without it the set is printed and nothing is judged.
-#   --dry-run              run the read-only checks (contract, scope lock, comment
+#   --gate-change "<step>[,<step>…]: <reason, at least 20 characters>"
+#                          the orchestrator's authorization (never a worker's, never the PR's) for a PR that changes the
+#                          pinned gate file to be judged by its own copy: GATE CHANGE below.
+#   --dry-run             run the read-only checks (contract, scope lock, comment
 #                          heading, PR lookup, trust, smoke check, worktree resolution) and print the plan; no
 #                          side effects besides fetching origin/<base>, which the checks read.
 #
@@ -71,7 +74,27 @@
 # skip-worktree, assume-unchanged or a local commit cannot hide a change) — or, when origin has no
 # such file yet, the PR's copy runs. So neither a PR nor another session can relax the hooks that
 # judge it; <MAIN>'s own refs and index are never consulted for that.
+#
+# GATE CHANGE. Pinning means a PR that removes or renames what origin/<base>'s gate names (a deleted step's script, a
+# renamed directory the gate globs) is red against that gate forever, however green its own copy is. The sanctioned
+# path, never a manual merge, is authorized from outside the PR: the orchestrator's `--gate-change "<step>[,<step>…]:
+# <reason, at least 20 characters>"` (nothing in the PR — no trailer, no file — ever counts). With it, before the gate
+# runs: the PR must change gate.merge's protected file, which origin/<base> has and the PR still has, and leave
+# gate.merge in .claude/sapu.json as it is (a PR that renames the gate file or changes gate.merge cannot take this
+# path: fails closed); and the review comment's first line must be `Review tier: red` (the 🔴 pair, A3; the same check
+# as red areas). Then, if the base gate is red, the PR's own copy of that file runs once more in the same worktree. It
+# merges only when every step red in the base run is named in the flag (no red step readable = refused), every step
+# green in the base run and gone from the PR copy is named too, every named step gone from the PR copy is named by a
+# removed line of the gate file's diff (an unrelated red cannot be named away), and the PR copy is green as the base gate is (exit 0,
+# a summary, no gate.redIf line) with no ✗ line. Step names match exactly. That check binds only what the flag names:
+# the PR owns its copy's step names and exit code, so the named list and the reviewed gate diff are the authorization.
+# Any unmet condition = exit 2 naming it. Both runs are gates log lines; the PR copy's, and the merges and handoffs log
+# lines, end in ` judge=pr-copy base_red=<steps> named=<steps> reason=<reason>` (spaces as _); those two keep the base
+# run's gate=<s>s and add pr_copy_gate=<s>s. The merge comment quotes the reason (@mentions defused) and the gate
+# file's diff (first 300 lines, in a fence longer than any backtick run in it). Without the flag: today's red, plus,
+# when the PR changes that file, the base-red steps the flag would have to name.
 set -euo pipefail
+unset PR_COPY # set per call by the GATE CHANGE path only: never inherited from the caller's environment
 
 HEADING="Notes (recorded, not filed)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,22 +103,33 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0; CLOSES=""; CLOSES_SET=0
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0; CLOSES=""; CLOSES_SET=0; GC_ARG=""; GC_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --gate-change) [ $# -ge 2 ] || die "--gate-change needs \"<step>[,<step>…]: <reason>\""; GC_ARG="$2"; GC_SET=1; shift 2 ;;
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
     --smoke-wait) [ $# -ge 2 ] || die "--smoke-wait needs a value"; SMOKE_WAIT="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --alone) ALONE=1; shift ;;
     --closes) [ $# -ge 2 ] || die "--closes needs a value (the lane's issue number, or none)"; CLOSES="$2"; CLOSES_SET=1; shift 2 ;;
-    -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,61p' "$0"; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) if [ -z "$PR" ]; then PR="$1"; elif [ -z "$COMMENT_FILE" ]; then COMMENT_FILE="$1"; else die "unexpected argument $1"; fi; shift ;;
   esac
 done
-[ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--dry-run] | <PR> --alone [--workers N]"
+[ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--gate-change \"<steps>: <why>\"] [--dry-run] | <PR> --alone [--workers N]"
 [ "$ALONE" = 0 ] || { [ -z "$COMMENT_FILE" ] && [ "$DRY" = 0 ] || die "--alone takes no review comment file and no --dry-run"; }
 [ "$ALONE" = 0 ] || [ "$CLOSES_SET" = 0 ] || die "--closes does not apply to --alone"
+GC_STEPS=""; GC_REASON=""
+if [ "$GC_SET" = 1 ]; then
+  [ "$ALONE" = 0 ] || die "--gate-change does not apply to --alone"
+  case "$GC_ARG" in *": "*) ;; *) die "--gate-change needs \"<step>[,<step>…]: <reason>\", got '$GC_ARG'" ;; esac
+  # One step per line, trimmed; the reason on one line. A step name holding ": " cannot be named (the first one splits).
+  GC_STEPS="$(printf '%s\n' "${GC_ARG%%: *}" | tr ',' '\n' | LC_ALL=C sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | grep . || true)"
+  GC_REASON="$(printf '%s' "${GC_ARG#*: }" | tr -s '[:space:]' ' ' | LC_ALL=C sed -E 's/^ //; s/ $//')"
+  [ -n "$GC_STEPS" ] || die "--gate-change names no step: \"<step>[,<step>…]: <reason>\""
+  [ "${#GC_REASON}" -ge 20 ] || die "--gate-change needs a reason of at least 20 characters after the steps, got '$GC_REASON'"
+fi
 [ "$CLOSES_SET" = 0 ] || case "$CLOSES" in none) ;; ""|0*|*[!0-9]*) die "--closes must be an issue number or none, got '$CLOSES'" ;; esac
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
 case "$SMOKE_WAIT" in ''|*[!0-9]*) die "--smoke-wait must be a number of minutes, got '$SMOKE_WAIT'" ;; esac
@@ -169,7 +203,7 @@ protect() { # <command>
   (cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" protect --ref "$BASE_SHA" -- "${w[@]}")
 }
 P_GATE="$(protect "$GATE_MERGE")" || die "cannot read which file gate.merge runs (see above)"
-P_AFTER=""; P_RED=""; P_ALONE=""; P_STEP=""; RETRIED=""; RETRIED_STEPS=""
+P_AFTER=""; P_RED=""; P_ALONE=""; P_STEP=""; RETRIED=""; RETRIED_STEPS=""; GC_JUDGED=""; GC_NOTE=""; GC_SECS=""
 if [ -n "$MERGE_AFTER" ]; then P_AFTER="$(protect "$MERGE_AFTER")" || die "cannot read which file mergeAfter runs (see above)"; fi
 if [ "$ALONE" = 1 ]; then
   [ -n "$(cget .gate.testFiles)" ] || die "--alone needs gate.testFiles in the contract on origin/$BASE (CONTRACT.md): the command that runs the failing test files, which are appended to it"
@@ -196,14 +230,17 @@ on_origin() { local r; for r in "${TRUSTED[@]}"; do blob_at "$r" "$1" >/dev/null
 
 # Run a contract command (its protect JSON: words split on whitespace, no shell syntax) with cwd
 # <dir>. Its protected word runs <MAIN>'s copy when origin/<base> has that file (main_mismatch proved
-# the copy identical), else <fallback>'s copy; with no fallback it does not run (see SAFETY).
+# the copy identical), else <fallback>'s copy; with no fallback it does not run (see SAFETY). PR_COPY=1 runs the
+# fallback's copy even when origin has the file: only the GATE CHANGE path (see the header) sets it, per call (the
+# caller's environment cannot: it is unset at the top).
 run_contract() { # <dir> <fallback-dir or ""> <protect JSON> [extra args...]
   local dir="$1" fb="$2" pj="$3" k x; shift 3
   local -a w=()
   while IFS= read -r x; do w+=("$x"); done < <(jq -r '.words[]' <<<"$pj")
   k="$(jq -r '.index // empty' <<<"$pj")"
   if [ -n "$k" ]; then
-    if on_origin "${w[$k]}"; then w[$k]="$MAIN/${w[$k]}"
+    if [ "${PR_COPY:-0}" = 1 ] && [ -n "$fb" ]; then w[$k]="$fb/${w[$k]}"
+    elif on_origin "${w[$k]}"; then w[$k]="$MAIN/${w[$k]}"
     elif [ -n "$fb" ]; then say "warning: origin/$BASE has no ${w[$k]} yet; using $fb's copy"; w[$k]="$fb/${w[$k]}"
     else say "${w[$k]} is not on origin/$BASE: not running an unverified copy"; return 127; fi
   fi
@@ -561,6 +598,8 @@ if [ "$DRY" = 1 ]; then
   if [ -n "$(protected_path "$P_GATE")" ]; then plan "gate.merge pins <MAIN>'s $(protected_path "$P_GATE") (origin/$BASE's blob; the PR's copy only while origin has none)"
   else plan "gate.merge pins no repo file ($(jq -r '.why' <<<"$P_GATE")): the PR's own copy of the gate's logic runs"; fi
   plan "gate in $WT: $(jq -r '.words | join(" ")' <<<"$P_GATE")  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $GITDIR/sapu-gates.log)"
+  if [ "$GC_SET" = 1 ]; then plan "--gate-change names $(paste -sd, - <<<"$GC_STEPS"): the PR must change $(protected_path "$P_GATE" || true) and the comment's line 1 be 'Review tier: red', else refused before the gate; red, the PR's own copy judges it (GATE CHANGE)"
+  elif [ -n "$(protected_path "$P_GATE")" ]; then plan "red, and the PR changes $(protected_path "$P_GATE"): today's red, naming the steps --gate-change would have to name (GATE CHANGE)"; fi
   plan "(real runs hold a lock dir $GITDIR/sapu-merge.lock; a second run dies)"
   if [ "$P_MERGE" = human ]; then plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "gh pr comment"), gh pr ready $PR, request review${P_REVIEWERS:+ from $P_REVIEWERS}; no merge (policy merge: human)"
   else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --$METHOD --delete-branch --match-head-commit <gated SHA>"; fi
@@ -679,15 +718,32 @@ push_synced() {
 # point 4 for Phase A). "Could not classify" refuses the merge.
 MISMATCH="$(main_mismatch)"
 [ -z "$MISMATCH" ] || die "$(mismatch_msg "$MISMATCH")"
+# Line 1 only: sapu-wave.js writes it there, and reviewer text further down must not satisfy it.
+# Here-strings, not pipes into `grep -q`: an early-exiting reader SIGPIPEs the writer under pipefail.
+review_red() { grep -qE '^Review tier: red( |$)' <<<"$(head -n 1 "$COMMENT_FILE")"; }
 if [ -n "$RED_AREAS" ]; then
   # No fallback to the PR's copy: a classifier origin/<base> lacks means the red areas are unknown.
   RED="$(run_contract "$MAIN" "" "$P_RED" --ref "$SHA" 2>/dev/null | jq -er '.redAreas | join(", ")')" \
     || die "red-area check failed: a PR whose red areas are unknown is not merged"
-  # Line 1 only: sapu-wave.js writes it there, and reviewer text further down must not satisfy it.
-  # Here-strings, not pipes into `grep -q`: an early-exiting reader SIGPIPEs the writer under pipefail.
-  if [ -n "$RED" ] && ! grep -q '^Review tier: red' <<<"$(head -n 1 "$COMMENT_FILE")"; then
+  if [ -n "$RED" ] && ! review_red; then
     die "PR touches red areas ($RED) but the review comment has no 'Review tier: red' line: it needs the adversarial pair (A3)"
   fi
+fi
+
+# --- 6b. GATE CHANGE preconditions (header): checked before the gate, so a refusal costs no gate run --------------
+gc_refuse() { say "--gate-change refused: $*"; exit 2; }
+GC_FILE="$(protected_path "$P_GATE")"; GC_CHANGED=0; GC_DRC=0
+if [ -n "$GC_FILE" ] && on_origin "$GC_FILE"; then
+  git -C "$WT" diff --quiet "refs/remotes/origin/$BASE" "$SHA" -- "$GC_FILE" >/dev/null 2>&1 || GC_DRC=$?
+  [ "$GC_DRC" != 1 ] || GC_CHANGED=1 # 1 = differs; 128 (cannot diff) counts as unchanged: no path, fails closed
+fi
+if [ "$GC_SET" = 1 ]; then
+  [ "$GC_CHANGED" = 1 ] || gc_refuse "the PR does not change ${GC_FILE:-a repo file} (the file origin/$BASE's gate.merge runs${GC_FILE:+ and has}), so there is no gate change to judge by its copy"
+  git -C "$WT" cat-file -e "$SHA:$GC_FILE" 2>/dev/null \
+    || gc_refuse "the PR deletes or renames $GC_FILE itself: origin/$BASE's gate.merge would run a file the PR no longer has (fails closed)"
+  [ "$(git -C "$WT" show "$SHA:$CONTRACT_FILE" 2>/dev/null | jq -r '.gate.merge // empty' 2>/dev/null || true)" = "$GATE_MERGE" ] \
+    || gc_refuse "the PR changes gate.merge in $CONTRACT_FILE (or it cannot be read there): its new gate is not what origin/$BASE runs, so this path cannot judge it (fails closed)"
+  review_red || gc_refuse "the review comment's first line is not 'Review tier: red': a gate change needs the 🔴 pair's review (A3) of the gate diff"
 fi
 
 # --- 7. merge gate ------------------------------------------------------------------------------------------------
@@ -748,8 +804,13 @@ sig_of() { # <error line or empty>
   printf '%08x' "$(printf '%s' "$n" | cksum | cut -d' ' -f1)"
 }
 
-gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
-  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" "${LIVE:+ live=1}" >>"$GATES_LOG"; } 2>/dev/null \
+step_names() { LC_ALL=C sed -E 's/^(✓|✗)[[:space:]]*//; s/ [0-9][0-9.]*s$//'; } # summary lines -> step names
+# Markdown for the PR comment: a backtick fence longer than any backtick run in <text> (at least 3), and <text> with
+# its backticks made quotes and every @mention in a code span (no notification).
+fence() { printf '%*s' "$( { LC_ALL=C grep -oE '`+' <<<"$1" || true; } | awk '{ if (length($0) > m) m = length($0) } END { print (m >= 3 ? m + 1 : 3) }')" '' | tr ' ' '`'; }
+defuse() { printf '%s' "$1" | tr '`' "'" | LC_ALL=C sed -E 's/@([A-Za-z0-9][A-Za-z0-9_./-]*)/`@\1`/g'; }
+gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps] [" judge=pr-copy …"]
+  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" "${5:-}" "${LIVE:+ live=1}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
 }
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
@@ -757,7 +818,7 @@ gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed
 if [ "$GATE_RC" = 75 ]; then
   gate_record setup-failed -
   LAST="$(grep -v '^[[:space:]]*$' "$LOG" | tail -n 1 || true)"
-  die "gate setup failed (not a PR defect): ${LAST:-the gate printed nothing} — log: $LOG — worktree $WT kept"
+  die "gate setup failed (not a PR defect): ${LAST:-the gate printed nothing} — log: $LOG — worktree $WT kept$([ "$GC_SET$GC_CHANGED" = 00 ] || echo " — --gate-change cannot help a gate that does not start (for example, the PR removed a script the gate calls before its first step): split it — first a PR whose gate stops calling the script, then one that removes it")"
 fi
 START="$(grep -nE -m1 "$SUMMARY_START" "$LOG" | cut -d: -f1 || true)"
 SUMMARY="$([ -n "$START" ] && tail -n "+$START" "$LOG" || true)"
@@ -868,8 +929,9 @@ if [ -n "$RED" ]; then
   # proof: that PR may really have broken it. known-flake = every failing file proven flaky, and
   # nothing else made this gate red. A verdict never merges anything: only a green gate does.
   # ponytail: the last 1000 runs are the ledger's memory; a flake older than that is unknown again.
+  # A judge=pr-copy run (GATE CHANGE) ran another gate on the same tree: it proves nothing either way.
   PROVEN="$( { tail -n 1000 "$GATES_LOG" 2>/dev/null || true; } | awk -v pr="$PR" '
-    $0 !~ / live=1$/ && $2 != pr && $7 ~ /^tree=/ && $7 != "tree=-" {
+    $0 !~ / live=1$/ && $0 !~ / judge=pr-copy / && $2 != pr && $7 ~ /^tree=/ && $7 != "tree=-" {
       k = $2 " " $7
       if ($4 == "green") green[k] = 1
       else if ($4 == "red" && $6 ~ /^failed=/ && $6 != "failed=-") red[k] = red[k] "," substr($6, 8)
@@ -922,6 +984,58 @@ if [ -n "$RED" ]; then
   elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$DIFF_NOTE$LIVE_NOTE"
   elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")$LIVE_NOTE"
   else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$DIFF_NOTE$LIVE_NOTE"; fi
+  # GATE CHANGE (header): the PR changes the pinned gate file. With --gate-change (its preconditions held in 6b) the
+  # PR's own copy judges it, and no retry below runs; without it, today's red plus the steps the flag would name.
+  if [ "$GC_CHANGED" = 1 ]; then
+    # The base run's red steps, one per line, as steps= records them; and its green ones.
+    BASE_RED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | step_names | grep . || true)"
+    GC_BASE="$(paste -sd, - <<<"$BASE_RED")"
+    if [ "$GC_SET" = 0 ]; then
+      say "this PR changes $GC_FILE, the gate this red ran from origin/$BASE's copy (a PR that removes or renames what that gate names can never pass it). If that is the cause: read the gate diff, confirm the 🔴 pair review covered it, and run sapu-merge.sh again with --gate-change \"<steps>: <why, at least 20 characters>\" — name only the steps the gate diff removes or renames (base-red here: ${GC_BASE:-none readable, so it is refused}), plus every green step the PR's copy drops; a base-red step the gate diff does not remove is a PR defect (NEEDS-FIX), not a gate change. Never merge outside sapu-merge.sh."
+    else
+      [ -n "$BASE_RED" ] || gc_refuse "no red step can be read from the base run (no ✗ line after gate.summaryStart '$SUMMARY_START'), so what the PR's copy must account for is unknown — it does not judge (fails closed)"
+      GC_UNNAMED="$(grep -vxF -f <(printf '%s\n' "$GC_STEPS") <<<"$BASE_RED" | paste -sd, - || true)"
+      [ -z "$GC_UNNAMED" ] || gc_refuse "base-red steps not named in it: $GC_UNNAMED — each step red in origin/$BASE's gate must be named, so an unrelated red never merges this way"
+      GC_NAMED="$(paste -sd, - <<<"$GC_STEPS")"
+      GC_NOTE=" judge=pr-copy base_red=${GC_BASE// /_} named=${GC_NAMED// /_} reason=$(cut -c1-200 <<<"$GC_REASON" | tr ' ' '_')"
+      GC_LOG="$(mktemp "${TMPDIR:-/tmp}/gate-prcopy-pr$PR.XXXXXX")" || die "cannot create the PR-copy gate log in ${TMPDIR:-/tmp}"
+      say "--gate-change: $GC_REASON — the base gate is red in $GC_BASE; running the PR's own $GC_FILE — log: $GC_LOG"
+      GC_DIFF="$(git -C "$WT" -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv "refs/remotes/origin/$BASE" "$SHA" -- "$GC_FILE" 2>/dev/null || true)"
+      GC_RC=0; BASE_SECS=$GATE_SECS; GATE_START=$SECONDS
+      PR_COPY=1 SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
+        run_contract "$WT" "$WT" "$P_GATE" >"$GC_LOG" 2>&1 || GC_RC=$?
+      GC_SECS=$((SECONDS - GATE_START)); GATE_SECS=$GC_SECS # its own gates log line; the merges log keeps the base run's
+      if [ "$GC_RC" = 75 ]; then gate_record setup-failed - "" "" "$GC_NOTE"; say "GATE RED: the PR's own gate could not start; it is the PR's code, so this is a PR defect (NEEDS-FIX), not infra — log: $GC_LOG — worktree $WT kept"; exit 2; fi
+      # Green as the base gate is (exit 0, a summary, no gate.redIf line), no ✗ line, and no base-green step dropped
+      # unless named (absent = not a ✓ line in it).
+      GC_START="$(grep -nE -m1 "$SUMMARY_START" "$GC_LOG" | cut -d: -f1 || true)"
+      GC_SUM="$([ -n "$GC_START" ] && tail -n "+$GC_START" "$GC_LOG" || true)"
+      GC_X="$(grep -E '^✗' <<<"$GC_SUM" | step_names || true)"
+      GC_DROPPED="$(printf '%s\n' "$SUMMARY" | grep -E '^✓' | step_names | grep -vxF -f <(grep -E '^✓' <<<"$GC_SUM" | step_names | grep .) \
+        | grep -vxF -f <(printf '%s\n' "$GC_STEPS") | grep . | paste -sd, - || true)"
+      GC_RED=""
+      [ "$GC_RC" = 0 ] || GC_RED="it exited $GC_RC"
+      [ -z "$GC_X" ] || GC_RED="${GC_RED:+$GC_RED; }✗ steps in it: $(paste -sd, - <<<"$GC_X")"
+      if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$GC_SUM"; then GC_RED="${GC_RED:+$GC_RED; }a summary line matches gate.redIf"; fi
+      [ -n "$GC_SUM" ] || GC_RED="${GC_RED:+$GC_RED; }no gate summary in its log"
+      [ -z "$GC_DROPPED" ] || GC_RED="${GC_RED:+$GC_RED; }base-green steps gone from it and not named: $GC_DROPPED"
+      # A named step gone from the PR's copy must be one the gate diff removes: a removed line of it holds the step's name.
+      GC_REMOVED="$(grep -E '^-' <<<"$GC_DIFF" | grep -vE '^---' || true)"
+      GC_UNBACKED="$(printf '%s\n' "$GC_STEPS" | grep . | grep -vxF -f <(grep -E '^✓' <<<"$GC_SUM" | step_names | grep .) \
+        | while IFS= read -r st; do grep -qF -- "$st" <<<"$GC_REMOVED" || printf '%s\n' "$st"; done | paste -sd, - || true)"
+      [ -z "$GC_UNBACKED" ] || GC_RED="${GC_RED:+$GC_RED; }named steps gone from it that no removed line of the gate diff names: $GC_UNBACKED"
+      if [ -n "$GC_RED" ]; then
+        gate_record red - "" "$(paste -sd, - <<<"$GC_X")" "$GC_NOTE"
+        say "GATE RED (the PR's own $GC_FILE: $GC_RED): not merged — log: $GC_LOG — worktree $WT kept"
+        exit 2
+      fi
+      gate_record green - "" "" "$GC_NOTE"
+      GATE_SECS=$BASE_SECS; GC_JUDGED=1; SUMMARY="$GC_SUM"
+      GC_N="$(grep -c '' <<<"$GC_DIFF" || true)"
+      [ "$GC_N" -le 300 ] || GC_DIFF="$(head -n 300 <<<"$GC_DIFF")"$'\n'"… $((GC_N - 300)) more lines: git diff origin/$BASE $SHA -- $GC_FILE"
+      say "--gate-change: the PR's own $GC_FILE is green, each base-red step ($GC_BASE) is gone from it or green in it, and every dropped step is named: merging"
+    fi
+  fi
   # Same-run retry (contract gate.testFiles + gate.testSteps): every ✗ summary step is one the contract names as a test
   # run whose failures its runner prints as FAIL lines, and only test files failed → those files run once more, on this
   # tree, before mergeAfter touches anything. It merges only a known-flake (every file proven flaky in ANOTHER PR): a
@@ -930,7 +1044,7 @@ if [ -n "$RED" ]; then
   # `alone`, never a flake proof.
   # Infra re-run (contract gate.step): each ✗ step runs once more on this tree, after a pause, before mergeAfter. All
   # green = the same tree passed every step of the gate, so it merges as green; one red = red, no whole re-run here.
-  if [ "$VERDICT" = infra ]; then
+  if [ "$VERDICT" = infra ] && [ -z "$GC_JUDGED" ]; then
     [ -n "$P_STEP" ] || { say "infra: no gate.step in the contract, so no same-run step re-run — A5: once the endpoint answers, one whole re-run (not counted as the PR's)"; exit 2; }
     IWAIT="${SAPU_INFRA_WAIT:-30}"; [[ "$IWAIT" =~ ^[0-9]+$ ]] || IWAIT=30
     say "infra re-run in ${IWAIT}s: $(paste -sd, - <<<"$XSTEPS")"
@@ -966,7 +1080,7 @@ if [ -n "$RED" ]; then
     XRC=0; grep -qvE -- "$TEST_STEPS" <<<"$XSTEPS" || XRC=$?
     [ "$XRC" != 1 ] || ALL_TEST=1 # 1 = the ✗ step is in gate.testSteps; 0 = it is not; 2 = the regex is not ERE
   fi
-  if [ -z "$RETRIED_STEPS" ]; then
+  if [ -z "$RETRIED_STEPS" ] && [ -z "$GC_JUDGED" ]; then
   [ -n "$P_ALONE" ] && [ "$ALL_TEST" = 1 ] && [ -n "$TESTS" ] && [ -z "$NONTEST" ] || exit 2
   ARC=0; alone_run "$TESTS" "$TREE" || ARC=$?
   case "$ARC" in
@@ -1001,9 +1115,15 @@ GATE_LINE="$(printf '%s\n' "$SUMMARY" | grep -E '[0-9]+ passed' | tail -1 || tru
 FULL_COMMENT="$(mktemp "${TMPDIR:-/tmp}/sapu-merge-comment-$PR.XXXXXX")"
 {
   cat "$COMMENT_FILE"
-  printf '\n\n**Merge gate** (`%s`, workers=%s) at `%s`:\n\n```\n%s\n```\n' "$GATE_MERGE" "$WORKERS" "$SHA" "$SUMMARY"
+  F="$(fence "$SUMMARY")" # a PR-copy summary is the PR's own text: it must not close the fence
+  printf '\n\n**Merge gate** (`%s`, workers=%s) at `%s`:\n\n%s\n%s\n%s\n' "$GATE_MERGE" "$WORKERS" "$SHA" "$F" "$SUMMARY" "$F"
   [ -z "$RETRIED_STEPS" ] || printf '\nRed on its first run only in these steps, on a network error, which then passed on a same-tree re-run (`gate.step`): %s\n' "$RETRIED_STEPS"
   [ -z "$RETRIED" ] || printf '\nRed on its first run only in these test files, which then passed on a same-tree retry (`gate.testFiles`): %s\n' "$RETRIED"
+  if [ -n "$GC_JUDGED" ]; then
+    F="$(fence "$GC_DIFF")"
+    printf '\n**Gate change** — the summary above is the PR'\''s own `%s`, judged so by `--gate-change` after the 🔴 pair review: %s\n\n' "$GC_FILE" "$(defuse "$GC_REASON")"
+    printf 'origin/%s'\''s copy of the gate was red in: %s. Named in the flag: %s. The gate diff:\n\n%sdiff\n%s\n%s\n' "$BASE" "$(defuse "$GC_BASE")" "$(defuse "$GC_NAMED")" "$F" "$GC_DIFF" "$F"
+  fi
 } >"$FULL_COMMENT"
 if [ "$P_TRACES" = none ]; then
   # traces: none — the review and the gate summary stay on this machine; nothing on the PR says sapu.
@@ -1025,7 +1145,7 @@ if [ "$P_MERGE" = human ]; then
   for r in $P_REVIEWERS; do
     gh pr edit "$PR" --repo "$REPO" --add-reviewer "$r" >/dev/null 2>&1 || say "warning: could not request a review from $r"
   done
-  printf '%s %s %s gate=%ss handoff\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$GITDIR/sapu-handoffs.log" 2>/dev/null || true
+  printf '%s %s %s gate=%ss handoff%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" "${GC_SECS:+ pr_copy_gate=${GC_SECS}s}" "$GC_NOTE" >>"$GITDIR/sapu-handoffs.log" 2>/dev/null || true
   printf 'sapu-merge: PR #%s gate green at %s, handed off for review%s (merge: human)\n' "$PR" "$SHA" "${P_REVIEWERS:+ to $P_REVIEWERS}"
   exit 4
 fi
@@ -1051,7 +1171,7 @@ MERGE_ERR="$(gh pr merge "$PR" --repo "$REPO" "--$METHOD" --delete-branch --matc
   || die "gh pr merge --$METHOD failed: $(printf '%s' "$MERGE_ERR" | tail -n 5) — a repo that does not allow $METHOD merges needs the contract's mergeMethod (squash, merge or rebase); else the PR head may have moved since $SHA; worktree $WT kept"
 # One line per merge that really happened: sapu-metrics --merges-log counts merged PRs from this,
 # because a transcript only records the merge commands, not which of them merged.
-printf '%s %s %s gate=%ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$GITDIR/sapu-merges.log" 2>/dev/null \
+printf '%s %s %s gate=%ss%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" "${GC_SECS:+ pr_copy_gate=${GC_SECS}s}" "$GC_NOTE" >>"$GITDIR/sapu-merges.log" 2>/dev/null \
   || say "warning: merged, but could not record it in $GITDIR/sapu-merges.log"
 
 RELABELED=""
@@ -1129,7 +1249,7 @@ fi
 
 # --- 10. report -------------------------------------------------------------------------------------------------------------------------
 printf 'PR #%s merged (%s)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
-  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}${RETRIED:+ (red only in known-flake $RETRIED, green on retry)}${RETRIED_STEPS:+ (red only on a network error in $RETRIED_STEPS, green on re-run)}" "$L_DONE" "${RELABELED:- none}"
+  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}${RETRIED:+ (red only in known-flake $RETRIED, green on retry)}${RETRIED_STEPS:+ (red only on a network error in $RETRIED_STEPS, green on re-run)}${GC_JUDGED:+ (judged by the PR copy of $GC_FILE: --gate-change)}" "$L_DONE" "${RELABELED:- none}"
 [ -z "$CLEANUP" ] || printf '%s\n' "$CLEANUP"
 [ -z "$LEFTOVER" ] || printf 'WARNING leftover worktree (remove by hand): %s\n' "$LEFTOVER"
 [ "$AFTER_FAILED" = 0 ] || { say "merged, but mergeAfter failed: fix what it reported before the next merge"; exit 3; }

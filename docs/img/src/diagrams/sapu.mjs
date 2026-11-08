@@ -98,7 +98,7 @@ export default {
       "each review reports fewer findings than the one before, and no",
       "finding is reported by three reviews in a row; else blocked (reason)",
       `a finding ${b("class")} back after its fix → one ${b("redesign")} (Opus/high); back again → owner`,
-      `${b("ESCALATE", "tb")} → one step up the ladder, once; then blocked`,
+      `${b("ESCALATE", "tb")} → one step up, once; at the ceiling one Opus/high decides`,
       `past its ${b("step budget")} → handoff: WIP commit, then a fresh worker`,
       "of the same tier goes on while each brings a commit (≤ 5 per step)",
     ], "cap", 19);
