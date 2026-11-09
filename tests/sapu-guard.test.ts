@@ -4447,3 +4447,11 @@ describe("one gate.fast per lane", () => {
     expect((fastGateOnce as (i: unknown) => string | null)({ main, cwd: wtA, command: fast, fast: "" })).toBeNull();
   });
 });
+
+describe("gate.select is the orchestrator's alone, like gate.merge", () => {
+  it("compiles a deny rule for the select script, and none without one", () => {
+    const withSelect = compileRules({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, select: "scripts/select-gate.sh" } } as never) as { deny: { path?: string }[] };
+    expect(withSelect.deny.some((r) => r.path === "scripts/select-gate.sh")).toBe(true);
+    expect((compileRules(FIXTURE_CONTRACT as never) as { deny: { path?: string }[] }).deny.some((r) => r.path === "scripts/select-gate.sh")).toBe(false);
+  });
+});

@@ -178,7 +178,11 @@ HOST="$(cget .host)"
 if [ -n "$HOST" ] && [ "$HOST" != github.com ]; then export GH_HOST="$HOST"; fi
 # origin commits whose files <MAIN>'s copies may equal: the fetched origin/<base>, and after the merge the new one.
 TRUSTED=("$BASE_SHA")
-GATE_MERGE="$(cget .gate.merge)"; SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"; TEST_STEPS="$(cget .gate.testSteps)"
+GATE_KEY=merge; GATE_MERGE="$(cget .gate.merge)"
+# A lane that only Refs its issue (--closes none: one PR of many for a tracker issue) runs gate.select, the diff's own tests, when the
+# contract has it; the whole gate.merge runs for the PR that closes the issue, and in the end-of-wave net.
+if [ "$CLOSES_SET" = 1 ] && [ "$CLOSES" = none ] && [ -n "$(cget .gate.select)" ]; then GATE_KEY=select; GATE_MERGE="$(cget .gate.select)"; fi
+SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"; TEST_STEPS="$(cget .gate.testSteps)"
 RED_AREAS="$(cget .redAreas)"; MERGE_AFTER="$(cget .mergeAfter)"
 L_IN_PROGRESS="$(cget .labels.inProgress)"; L_DONE="$(cget .labels.done)"
 # The repo's policy (CONTRACT.md §Policy; absent = sapu merges, leaves its comment and labels).
@@ -741,7 +745,7 @@ if [ "$GC_SET" = 1 ]; then
   [ "$GC_CHANGED" = 1 ] || gc_refuse "the PR does not change ${GC_FILE:-a repo file} (the file origin/$BASE's gate.merge runs${GC_FILE:+ and has}), so there is no gate change to judge by its copy"
   git -C "$WT" cat-file -e "$SHA:$GC_FILE" 2>/dev/null \
     || gc_refuse "the PR deletes or renames $GC_FILE itself: origin/$BASE's gate.merge would run a file the PR no longer has (fails closed)"
-  [ "$(git -C "$WT" show "$SHA:$CONTRACT_FILE" 2>/dev/null | jq -r '.gate.merge // empty' 2>/dev/null || true)" = "$GATE_MERGE" ] \
+  [ "$(git -C "$WT" show "$SHA:$CONTRACT_FILE" 2>/dev/null | jq -r ".gate.$GATE_KEY // empty" 2>/dev/null || true)" = "$GATE_MERGE" ] \
     || gc_refuse "the PR changes gate.merge in $CONTRACT_FILE (or it cannot be read there): its new gate is not what origin/$BASE runs, so this path cannot judge it (fails closed)"
   review_red || gc_refuse "the review comment's first line is not 'Review tier: red': a gate change needs the 🔴 pair's review (A3) of the gate diff"
 fi

@@ -1075,7 +1075,7 @@ function gateRules(merge, fast) {
 export function compileRules(contract) {
   const g = contract ? contract.guard : { envFiles: [], postgres: null, deny: [] };
   const deny = g.deny.map((r) => (r.argv ? { ...r, argv: peel(r.argv) } : r));
-  if (contract) deny.push(...gateRules(contract.gate.merge, contract.gate.fast));
+  if (contract) deny.push(...gateRules(contract.gate.merge, contract.gate.fast), ...(contract.gate.select ? gateRules(contract.gate.select, contract.gate.fast) : []));
   // guard.postgres, then each guard.databases entry: one matcher per engine and entry.
   const dbEntry = (engine, d) => ({ engine, ports: new Set(d.ports.map(Number)), dbs: new Set(d.databases), label: `${engine === "postgres" ? "" : `${engine} `}${[...d.ports.map((p) => `:${p}`), ...d.databases].join(", ")}` });
   const dbs = [...(g.postgres ? [["postgres", g.postgres]] : []), ...(Array.isArray(g.databases) ? g.databases.map((d) => [d.engine, d]) : [])];

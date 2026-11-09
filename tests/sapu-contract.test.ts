@@ -159,6 +159,8 @@ describe("validate", () => {
     ["databases that is not a list", (c: any) => (c.guard.databases = {}), /guard\.databases must be an array/],
     ["a smoke check flag that is not a boolean", (c: any) => (c.gate.smokeCheck = "yes"), /gate\.smokeCheck must be true or false/],
     ["a gate.diff that is not a command", (c: any) => (c.gate.diff = true), /gate\.diff must be a command/],
+    ["a gate.select that is not a command", (c: any) => (c.gate.select = true), /gate\.select must be a command that differs from gate\.merge/],
+    ["a gate.select equal to gate.merge", (c: any) => (c.gate.select = ` ${c.gate.merge}`), /gate\.select must be a command that differs from gate\.merge/],
     ["an empty gate.diff", (c: any) => (c.gate.diff = "  "), /gate\.diff must be a command/],
     ["a gate.testFiles that is not a command", (c: any) => (c.gate.testFiles = ["vitest"]), /gate\.testFiles must be a command/],
     ["a gate.testSteps that is not a regex", (c: any) => (c.gate.testSteps = "(unclosed"), /gate\.testSteps must be a valid regex/],
