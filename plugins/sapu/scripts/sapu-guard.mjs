@@ -188,6 +188,7 @@
 // that dropped agent_id for those subagents would leave them unguarded (not yet probed live; the
 // worker canary proves agent_id only for the ladder).
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -3055,6 +3056,39 @@ export function workerTranscript(input) {
 }
 
 
+/**
+ * ONE gate.fast PER LANE, ENFORCED. The brief said "once per agent" in prose and nothing held it: a lane runs a builder,
+ * its slices and a fixer per review round, each running the repo's fast gate again (measured: 3-6 runs per PR, minutes each).
+ * The first run in a worktree is let through and recorded in <MAIN>/.git/sapu-steps/; any later run of the same command in
+ * that worktree, by any agent, is refused (the merge gate runs the repo's whole gate once, and a red there is fixed from its
+ * own log). Only a command that IS the fast gate counts (redirections and `| tail` allowed): `npm test -- file` is a diff test.
+ * Never throws: a failed check lets the call through.
+ */
+export function fastGateOnce({ main, cwd, command, fast }) {
+  try {
+    if (!main || typeof command !== "string" || typeof fast !== "string" || !fast.trim()) return null;
+    const norm = (x) => x.trim().replace(/\s+/g, " ");
+    const want = norm(fast);
+    const tail = /^(?:\s*(?:2>&1|\|\s*tail(?:\s+-n?\s*\d+|\s+-\d+)?|>\s*\S+|&>\s*\S+))*\s*$/;
+    const hit = command.split(/&&|;|\n/).some((seg) => { const c = norm(seg); return c.startsWith(want) && tail.test(c.slice(want.length)); });
+    if (!hit) return null;
+    const dir = stepsDir(main);
+    if (!dir) return null;
+    const top = execFileSync("git", ["-C", cwd || process.cwd(), "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const key = "fast-" + createHash("sha1").update(fs.realpathSync(top)).digest("hex").slice(0, 16);
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.writeFileSync(path.join(dir, key), new Date().toISOString(), { flag: "wx" });
+      return null;
+    } catch (e) {
+      if (e.code !== "EEXIST") return null;
+    }
+    return `\`${fast}\` already ran in this lane's worktree: the fast gate runs once per lane, whoever runs it. Run only the tests that touch your diff, and, for a red step, only that step's own command. The repo's whole gate runs once, through sapu-merge.sh.`;
+  } catch {
+    return null;
+  }
+}
+
 export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget, context = DEFAULT_TUNING.contextBudget, transcript = null }) {
   if (!main || typeof agentId !== "string" || !agentId) return null;
   let n;
@@ -4037,6 +4071,8 @@ export function decide(input) {
   if (error && (!missing || SAPU_AGENT.test(input.agent_type || ""))) return `the repo's sapu contract is unreadable, so nothing is allowed: ${error}`;
   const first = worker ? checkCodeSearchFirst({ input, ti, ctx, main, refusals: resolveTuning(contract).codeSearchFirst.refusals }) : null;
   if (first) return first;
+  const once = worker && tool === "Bash" && contract ? fastGateOnce({ main, cwd, command: ti.command, fast: contract.gate.fast }) : null;
+  if (once) return once;
   return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps, context: rules.context, transcript: workerTranscript(input) }) : null;
 }
 

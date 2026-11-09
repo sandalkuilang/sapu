@@ -690,6 +690,11 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.36.3
+
+Nothing to change in your contract: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
+- **`gate.fast` runs once per lane, enforced.** Before this, "once per agent" was only text, so a lane's builder, slices and every fixer round each ran the repo's fast gate again (three to six runs a PR, minutes each). The guard now lets the first run of the exact `gate.fast` command in a worktree through and refuses every later one, whoever runs it; fixers are told it already ran. A red step is re-run by its own command; the merge gate still runs the repo's whole gate once. If a repo's `worker.md` tells workers to run the full gate or a repo-wide suite, the brief wins and the guard refuses the merge gate: take that line out.
+
 #### Upgrading from a version before 2.36.2
 
 Run `/sapu:init` again (or add the line to `.claude/settings.local.json` yourself), then start a new session:

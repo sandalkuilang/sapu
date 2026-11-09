@@ -522,7 +522,7 @@ its wrappers are stripped: shell + script (`bash scripts/merge.sh`) → a `path`
 a program written as a path (`scripts/merge.sh`) → a `path` rule; otherwise → an `argv` rule
 (`make gate`). Every other word that contains `/` or ends in `.sh`/`.js`/`.mjs`/`.cjs`/`.ts`/
 `.py` gets a `path` rule too (`node --import tsx scripts/merge.ts` refuses
-`npx tsx scripts/merge.ts`). When `gate.fast` = `gate.merge` + extra words, those extra words
+`npx tsx scripts/merge.ts`). The guard lets a sapu worker run the exact `gate.fast` command once per worktree (a lane) and refuses every later run there, by any agent; redirections and `| tail` do not change what counts, extra arguments do (a diff test). When `gate.fast` = `gate.merge` + extra words, those extra words
 become the `allowWith` of all those rules.
 
 ### `guard.postgres`, `guard.databases` and `guard.envFiles`
