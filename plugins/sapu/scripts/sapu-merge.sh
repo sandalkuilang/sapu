@@ -179,9 +179,9 @@ if [ -n "$HOST" ] && [ "$HOST" != github.com ]; then export GH_HOST="$HOST"; fi
 # origin commits whose files <MAIN>'s copies may equal: the fetched origin/<base>, and after the merge the new one.
 TRUSTED=("$BASE_SHA")
 GATE_KEY=merge; GATE_MERGE="$(cget .gate.merge)"
-# A lane that only Refs its issue (--closes none: one PR of many for a tracker issue) runs gate.select, the diff's own tests, when the
-# contract has it; the whole gate.merge runs for the PR that closes the issue, and in the end-of-wave net.
-if [ "$CLOSES_SET" = 1 ] && [ "$CLOSES" = none ] && [ -n "$(cget .gate.select)" ]; then GATE_KEY=select; GATE_MERGE="$(cget .gate.select)"; fi
+# A lane's PR (--closes given) runs gate.select, the diff's own tests, when the contract has it: the whole gate.merge is a batch's, not
+# each issue's, and runs in the end-of-wave net and at Finish. A PR without --closes (Phase A, not from a lane) keeps gate.merge.
+if [ "$CLOSES_SET" = 1 ] && [ -n "$(cget .gate.select)" ]; then GATE_KEY=select; GATE_MERGE="$(cget .gate.select)"; fi
 SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"; TEST_STEPS="$(cget .gate.testSteps)"
 RED_AREAS="$(cget .redAreas)"; MERGE_AFTER="$(cget .mergeAfter)"
 L_IN_PROGRESS="$(cget .labels.inProgress)"; L_DONE="$(cget .labels.done)"
