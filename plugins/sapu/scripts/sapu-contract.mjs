@@ -1648,6 +1648,31 @@ export function openBacklog(c, gh = ghJson) {
 }
 
 /**
+ * Lines of a worker profile (`worker.md` §Test and §Verification) that tell a worker to run the merge gate: the exact
+ * `gate.merge` command with nothing of `gate.fast`'s extra words after it. The brief says a worker never runs it and
+ * the guard refuses it, so such a line only wastes the worker's calls (a repo's profile once sent every agent to the
+ * full gate, again and again). A line that forbids it (never, only, not) is fine. `[line number, text]` pairs.
+ */
+export function workerGateConflicts(text, gate) {
+  const merge = (gate?.merge || "").trim().replace(/\s+/g, " ");
+  if (!merge || typeof text !== "string") return [];
+  const fast = (gate?.fast || "").trim().replace(/\s+/g, " ");
+  const extra = fast.startsWith(merge) ? fast.slice(merge.length).trim() : "";
+  const out = [];
+  let on = false;
+  text.split("\n").forEach((line, i) => {
+    if (/^#{1,6}\s/.test(line)) on = /^#{1,6}\s+(Test|Verification)\b/i.test(line);
+    if (!on || /\b(never|only|not|don't|do not)\b|sapu-merge/i.test(line)) return;
+    const flat = line.replace(/`/g, "").replace(/\s+/g, " ");
+    for (let at = flat.indexOf(merge); at >= 0; at = flat.indexOf(merge, at + 1)) {
+      const rest = flat.slice(at + merge.length).trimStart();
+      if (!extra || !rest.startsWith(extra)) { out.push([i + 1, line.trim()]); break; }
+    }
+  });
+  return out;
+}
+
+/**
  * The verdict for a sweep session: "finish" (the backlog is empty: §Finish), "handoff" (context at or past the
  * limit: rewrite sapu-sweep-state, release, start the successor session), else "continue" (the next wave here).
  * An unmeasured context or an unreadable backlog never ends a session: it reads as "continue".
@@ -2225,6 +2250,10 @@ function main(argv) {
     const defaults = Object.entries(resolveSpecialists(contract)).filter(([, a]) => a.startsWith("senior-dev-team:")).map(([r]) => r);
     if (defaults.length && seniorDevTeamInstalled() === false) {
       process.stderr.write(`sapu-contract: WARNING the senior-dev-team plugin is not installed or not enabled, but the roles ${defaults.join(", ")} use its agents: \`claude plugin install senior-dev-team@<marketplace>\` (the marketplace sapu came from), or map those roles in \`specialists\`.\n`);
+    }
+    const wp = (() => { try { return fs.readFileSync(path.join(contractHome(mainDir).dir, "worker.md"), "utf8"); } catch { return ""; } })();
+    for (const [n, line] of workerGateConflicts(wp, contract.gate)) {
+      process.stderr.write(`sapu-contract: WARNING worker.md line ${n} tells workers to run the merge gate (${contract.gate.merge}), which they never run and the guard refuses: ${line.slice(0, 120)}. Name gate.fast and the diff's tests instead.\n`);
     }
     for (const h of leakyAsyncHooks(settingsSources(mainDir))) {
       process.stderr.write(`sapu-contract: WARNING async tool hook that does not skip subagents (${h}): its output for every workflow agent's tool call lands in the orchestrator's context. Make it exit at once when its stdin JSON has "agent_id", or drop async.\n`);

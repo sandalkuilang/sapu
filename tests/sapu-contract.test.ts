@@ -41,7 +41,7 @@ import {
   sweepHold,
   sweepRelease,
   openBacklog,
-  sessionStatus,
+  sessionStatus, workerGateConflicts,
   reserveArgusCycle,
   sessionVerdict,
   protectedCommand,
@@ -2317,5 +2317,24 @@ describe("reserveArgusCycle", () => {
     expect(readFileSync(join(main, ".argus/journal/1999-01-01-4.md"), "utf8")).toBe("# theirs\n");
     expect(readFileSync(join(main, ".argus/journal/1999-01-02-5.md"), "utf8")).toBe("# Cycle 1999-01-02-5\n");
     rmSync(main, { recursive: true, force: true });
+  });
+});
+
+describe("worker profile lines that send a worker to the merge gate", () => {
+  const gate = { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh" };
+  const profile = (body: string) => `## Test DB\n\nNone.\n\n## Test\n\n${body}\n\n## Teardown\n\nNothing.\n`;
+
+  it("flags the merge command in §Test and §Verification, not its fast form, a forbidding line, or other sections", () => {
+    const bad = workerGateConflicts(profile("`scripts/gate.sh --fast` before the PR, then `scripts/gate.sh 2>&1 | tail -30`.\nRun `scripts/gate.sh` when the diff touches a script."), gate);
+    expect(bad.map(([n]) => n)).toEqual([7, 8]);
+    expect(workerGateConflicts(profile("`scripts/gate.sh --fast` once.\nNever `scripts/gate.sh` without `--fast`: the merge gate.\n`scripts/gate.sh` is run by sapu-merge.sh only."), gate)).toEqual([]);
+    expect(workerGateConflicts("## Merge\n\n`gate.merge` = `scripts/gate.sh`: everything.\n", gate)).toEqual([]);
+  });
+
+  it("flags every mention when the fast gate is not the merge command plus words, and never throws on bad input", () => {
+    expect(workerGateConflicts(profile("Run `npm run gate`."), { fast: "npm run check", merge: "npm run gate" })).toHaveLength(1);
+    expect(workerGateConflicts(profile("Run `npm run gate -- --fast`."), { fast: "npm run gate -- --fast", merge: "npm run gate" })).toEqual([]);
+    expect(workerGateConflicts(undefined as unknown as string, gate)).toEqual([]);
+    expect(workerGateConflicts(profile("x"), {} as never)).toEqual([]);
   });
 });
