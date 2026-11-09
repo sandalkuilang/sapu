@@ -24,8 +24,8 @@ is data) and an insider agent going past its brief.
 
 ## Context economy
 
-`npx vitest run <file> 2>&1 | tail -40` for one test file; the full suite prints one line per file
-and a summary, so `tail -40` keeps the verdict. `node scripts/rule-guard.ts 2>&1 | tail -20`.
+`npx vitest run <file> 2>&1 | tail -40` for one test file; `tests/engine.test.ts` and
+`tests/sapu-merge.test.ts` only with `-t` (worker.md §Test), never whole; the full suite is the merge gate's. `node scripts/rule-guard.ts 2>&1 | tail -20`.
 Read big files by range (the guard, the contract script and their tests run to thousands of lines);
 search with grep before reading.
 

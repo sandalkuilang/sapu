@@ -24,7 +24,7 @@ vitest, one file per script under `tests/` (the map is in worker.md §Test). Tes
 rules each have a case in `tests/sapu-guard.test.ts`; a trust or scope-lock rule has one in
 `tests/sapu-contract.test.ts` and, when the merge script reaches it, one in `tests/sapu-merge.test.ts`.
 `tests/engine.test.ts` covers the prose: budgets, English only, no repo, machine, issue-number or
-date facts in tracked files.
+date facts in tracked files; run only its suites for the files you changed (`-t`, worker.md §Test), never the whole file.
 
 ## Merge gate
 

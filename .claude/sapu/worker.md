@@ -34,14 +34,18 @@ Run only the test files that cover the diff: `npx vitest run tests/<file>.test.t
 and `tests/sapu-merge.test.ts` (the merge script calls it); `sapu-merge.sh` → `tests/sapu-merge.test.ts`;
 `workflows/*.js` → `tests/sapu-wave.test.ts`, `tests/inspector.test.ts`; `argus-live*.mjs` →
 `tests/argus-live.test.ts`; `sapu-metrics.ts` → `tests/sapu-metrics.test.ts`; `sapu-cleanup.mjs` →
-`tests/sapu-cleanup.test.ts`; any prose under `plugins/`, `README.md` or `docs/` →
-`tests/engine.test.ts` (prose budgets, English only, no repo or machine facts). "No test files
-found" means a wrong path, never green.
+`tests/sapu-cleanup.test.ts`; any prose under `plugins/`, `README.md` or `docs/` → only the
+`tests/engine.test.ts` suites for that kind of file, by name: `npx vitest run tests/engine.test.ts -t
+"<suite>|<suite>" 2>&1 | tail -20` (the suite names are the `describe` titles; `scripts/diff-tests.sh`
+picks them from the diff). Never the whole `tests/engine.test.ts`, and never the whole
+`tests/sapu-merge.test.ts` (minutes): name the case with `-t`. "No test files found" means a wrong
+path, never green.
 
 ## Verification
 
-`npx vitest run tests/engine.test.ts 2>&1 | tail -20` and `node scripts/rule-guard.ts 2>&1 | tail -20`
-before the PR (the rule guard needs the `Rule-Change` trailer committed first).
+`scripts/diff-tests.sh 2>&1 | tail -40` (the tests the diff touches, which is `gate.fast`) and `node
+scripts/rule-guard.ts 2>&1 | tail -20` before the PR (the rule guard needs the `Rule-Change` trailer
+committed first). The whole suite is the merge gate's.
 
 ## Teardown
 

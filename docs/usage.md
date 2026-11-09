@@ -690,6 +690,10 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.36.3
+
+Nothing to change. `/sapu:init` now drafts the diff-scoped test command in `worker.md` §Test so that a test file taking minutes runs only the cases the diff touches, never whole; `gate.fast` may be a script that selects them. Start a new session, or run `/reload-plugins` in a running one.
+
 #### Upgrading from a version before 2.36.2
 
 Run `/sapu:init` again (or add the line to `.claude/settings.local.json` yourself), then start a new session:
