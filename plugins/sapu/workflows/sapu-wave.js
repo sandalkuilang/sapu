@@ -49,7 +49,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.36.2 — one issue to a merge-ready PR: scout → implement → tiered review → fix → pre-PR; never merges. Live progress: this run\'s log',
+  description: 'sapu v2.36.3 — one issue to a merge-ready PR: scout → implement → tiered review → fix → pre-PR; never merges. Live progress: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: explores the issue, ends with a compact plan (and slices, when it is big)' },
@@ -917,7 +917,7 @@ async function runItem(item) {
         if (state.tier === 'red' && !WORKER_TIER) fixer = atLeast(fixer, RED_FLOOR)
         if (redesign) fixer = REDESIGN_AGENT
         const part = groups.length > 1 ? ` (group ${g + 1}/${groups.length})` : ''
-        const fixTaskOf = (asDecider) => redesign ? redesignTask(recurring, fs, state, earlier) : `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed${groups.length > 1 ? ` in ${[...new Set(fs.map(fileOf))].join(', ')} (other files have their own fixer)` : ''} for every other instance of that class and fix those in the same round (never code the PR did not touch).${groups.length > 1 && g < groups.length - 1 ? ' You are not the round\'s last fixer: run your diff tests only and skip gate.fast (the last fixer runs it once for the round).' : ''}${groups.length > 1 && g === groups.length - 1 ? ` You are the last fixer: for the class of each finding, also sweep every file this PR changed that is in no fixer's group (\`git diff --name-only origin/${BASE}...HEAD\`, minus ${grouped.join(', ')}).` : ''}${fixGuards(state, asDecider)}\n${listFindings(fs)}`
+        const fixTaskOf = (asDecider) => redesign ? redesignTask(recurring, fs, state, earlier) : `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed${groups.length > 1 ? ` in ${[...new Set(fs.map(fileOf))].join(', ')} (other files have their own fixer)` : ''} for every other instance of that class and fix those in the same round (never code the PR did not touch). gate.fast already ran for this lane, once, when the builder handed the branch on (the guard refuses a second run): run your diff tests only and skip gate.fast.${groups.length > 1 && g === groups.length - 1 ? ` You are the last fixer: for the class of each finding, also sweep every file this PR changed that is in no fixer's group (\`git diff --name-only origin/${BASE}...HEAD\`, minus ${grouped.join(', ')}).` : ''}${fixGuards(state, asDecider)}\n${listFindings(fs)}`
         r = await runWorker(fixer, {
           cont: true, step: redesign ? `Redesign ${state.cycles}` : `Fix ${state.cycles}${part}`, phase: 'Fix', label: tag(item, effortOf(fixer), redesign ? `redesign ${state.cycles}` : `fix ${state.cycles}${part}`), task: fixTaskOf(false),
         })

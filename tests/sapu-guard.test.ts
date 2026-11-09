@@ -9,7 +9,7 @@ import { basename, dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
-import { BIG_READ_BYTES, checkBigRead, checkCodeSearchFirst, codeSearchCommand, searchShape, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, SESSION_DIR, SESSION_EVERY, sessionContext, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { BIG_READ_BYTES, checkBigRead, fastGateOnce, checkCodeSearchFirst, codeSearchCommand, searchShape, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, SESSION_DIR, SESSION_EVERY, sessionContext, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -4411,5 +4411,47 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     expect(hook()).toMatch(/^sapu-guard: BLOCKED — orchestrator context 120k ≥ contextLimits\.session 100k: in a sapu sweep finish the current wave/);
     expect(hook()).toBe(0);
     rmSync(join(tmp, `sapu-session-${process.getuid?.() ?? "u"}`), { recursive: true, force: true });
+  });
+});
+
+describe("one gate.fast per lane", () => {
+  const main = mkdtempSync(join(tmpdir(), "sapu-fast-once-"));
+  const git = (...a: string[]) => execFileSync("git", ["-C", main, "-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { stdio: "ignore" });
+  git("init", "-q");
+  git("commit", "-q", "--allow-empty", "-m", "x");
+  const wtA = join(main, ".claude/worktrees/a");
+  const wtB = join(main, ".claude/worktrees/b");
+  git("worktree", "add", "-q", "--detach", wtA);
+  git("worktree", "add", "-q", "--detach", wtB);
+  afterAll(() => rmSync(main, { recursive: true, force: true }));
+  const fast = "npm run check -- --fast";
+  const run = (cwd: string, command: string) => (fastGateOnce as (i: unknown) => string | null)({ main, cwd, command, fast });
+
+  it("lets the first run in a worktree through and refuses every later one, whoever runs it and however it is piped", () => {
+    expect(run(wtA, `${fast} 2>&1 | tail -40`)).toBeNull();
+    expect(run(wtA, fast)).toMatch(/already ran in this lane's worktree/);
+    expect(run(wtA, `cd ${wtA} && ${fast}  2>&1 | tail -n 40`)).toMatch(/runs once per lane/);
+  });
+
+  it("counts per worktree, and counts only the fast gate itself: a diff test that starts with the same words is not one", () => {
+    expect(run(wtB, `${fast} extra-arg`)).toBeNull();
+    expect(run(wtB, `${fast} extra-arg`)).toBeNull();
+    expect(run(wtB, "npx vitest run tests/a.test.ts")).toBeNull();
+    expect(run(wtB, fast)).toBeNull();
+    expect(run(wtB, fast)).toMatch(/already ran/);
+  });
+
+  it("never throws or refuses without a fast gate, a command or a git directory", () => {
+    expect(fastGateOnce({ main: null, cwd: wtA, command: fast, fast })).toBeNull();
+    expect(run(wtA, undefined as unknown as string)).toBeNull();
+    expect((fastGateOnce as (i: unknown) => string | null)({ main, cwd: wtA, command: fast, fast: "" })).toBeNull();
+  });
+});
+
+describe("gate.select is the orchestrator's alone, like gate.merge", () => {
+  it("compiles a deny rule for the select script, and none without one", () => {
+    const withSelect = compileRules({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, select: "scripts/select-gate.sh" } } as never) as { deny: { path?: string }[] };
+    expect(withSelect.deny.some((r) => r.path === "scripts/select-gate.sh")).toBe(true);
+    expect((compileRules(FIXTURE_CONTRACT as never) as { deny: { path?: string }[] }).deny.some((r) => r.path === "scripts/select-gate.sh")).toBe(false);
   });
 });

@@ -258,17 +258,18 @@ export function validate(c) {
   need(typeof c.gitEmail === "string" && /^[^@\s]+@[^@\s]+$/.test(c.gitEmail), "gitEmail must be an email");
   need(typeof c.baseBranch === "string" && /^[\w./-]+$/.test(c.baseBranch), "baseBranch must be a branch name");
   if (c.gate && typeof c.gate === "object") {
-    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra", "smokeCheck", "diff", "testFiles", "testSteps", "step"]);
+    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra", "smokeCheck", "diff", "select", "testFiles", "testSteps", "step"]);
     need(!("infra" in c.gate) || c.gate.infra === null || isStr(c.gate.infra), "gate.infra must be a command or null");
     // Opt-in: sapu-merge.sh gates on the argus smoke suite's CI run only when the base branch's contract says so.
     need(!("smokeCheck" in c.gate) || typeof c.gate.smokeCheck === "boolean", "gate.smokeCheck must be true or false (omit it for false)");
     // Optional worker-side slice of the merge gate (SAPU_BASE = origin/<base>) and the command --alone appends failing test files to.
-    for (const k of ["diff", "testFiles", "step"]) need(!(k in c.gate) || isStr(c.gate[k]), `gate.${k} must be a command (omit it for none)`);
+    for (const k of ["diff", "select", "testFiles", "step"]) need(!(k in c.gate) || isStr(c.gate[k]), `gate.${k} must be a command (omit it for none)`);
     need(isStr(c.gate.fast), "gate.fast must be a command");
     need(isStr(c.gate.merge), "gate.merge must be a command");
     need(isRegex(c.gate.summaryStart), "gate.summaryStart must be a valid regex");
     need(c.gate.redIf === null || isRegex(c.gate.redIf), "gate.redIf must be a valid regex or null");
     need(!("testSteps" in c.gate) || isRegex(c.gate.testSteps), "gate.testSteps must be a valid regex (omit it for none)");
+    need(!("select" in c.gate) || (isStr(c.gate.select) && c.gate.select.trim().split(/\s+/).join(" ") !== String(c.gate.merge).trim().split(/\s+/).join(" ")), "gate.select must be a command that differs from gate.merge (omit it for none)");
     // The merge gate is denied to workers; a fast gate equal to it would leave them no gate at all.
     if (isStr(c.gate.fast) && isStr(c.gate.merge)) {
       const norm = (x) => x.trim().split(/\s+/).join(" ");
@@ -1648,6 +1649,31 @@ export function openBacklog(c, gh = ghJson) {
 }
 
 /**
+ * Lines of a worker profile (`worker.md` §Test and §Verification) that tell a worker to run the merge gate: the exact
+ * `gate.merge` command with nothing of `gate.fast`'s extra words after it. The brief says a worker never runs it and
+ * the guard refuses it, so such a line only wastes the worker's calls (a repo's profile once sent every agent to the
+ * full gate, again and again). A line that forbids it (never, only, not) is fine. `[line number, text]` pairs.
+ */
+export function workerGateConflicts(text, gate) {
+  const merge = (gate?.merge || "").trim().replace(/\s+/g, " ");
+  if (!merge || typeof text !== "string") return [];
+  const fast = (gate?.fast || "").trim().replace(/\s+/g, " ");
+  const extra = fast.startsWith(merge) ? fast.slice(merge.length).trim() : "";
+  const out = [];
+  let on = false;
+  text.split("\n").forEach((line, i) => {
+    if (/^#{1,6}\s/.test(line)) on = /^#{1,6}\s+(Test|Verification)\b/i.test(line);
+    if (!on || /\b(never|only|not|don't|do not)\b|sapu-merge/i.test(line)) return;
+    const flat = line.replace(/`/g, "").replace(/\s+/g, " ");
+    for (let at = flat.indexOf(merge); at >= 0; at = flat.indexOf(merge, at + 1)) {
+      const rest = flat.slice(at + merge.length).trimStart();
+      if (!extra || !rest.startsWith(extra)) { out.push([i + 1, line.trim()]); break; }
+    }
+  });
+  return out;
+}
+
+/**
  * The verdict for a sweep session: "finish" (the backlog is empty: §Finish), "handoff" (context at or past the
  * limit: rewrite sapu-sweep-state, release, start the successor session), else "continue" (the next wave here).
  * An unmeasured context or an unreadable backlog never ends a session: it reads as "continue".
@@ -2225,6 +2251,10 @@ function main(argv) {
     const defaults = Object.entries(resolveSpecialists(contract)).filter(([, a]) => a.startsWith("senior-dev-team:")).map(([r]) => r);
     if (defaults.length && seniorDevTeamInstalled() === false) {
       process.stderr.write(`sapu-contract: WARNING the senior-dev-team plugin is not installed or not enabled, but the roles ${defaults.join(", ")} use its agents: \`claude plugin install senior-dev-team@<marketplace>\` (the marketplace sapu came from), or map those roles in \`specialists\`.\n`);
+    }
+    const wp = (() => { try { return fs.readFileSync(path.join(contractHome(mainDir).dir, "worker.md"), "utf8"); } catch { return ""; } })();
+    for (const [n, line] of workerGateConflicts(wp, contract.gate)) {
+      process.stderr.write(`sapu-contract: WARNING worker.md line ${n} tells workers to run the merge gate (${contract.gate.merge}), which they never run and the guard refuses: ${line.slice(0, 120)}. Name gate.fast and the diff's tests instead.\n`);
     }
     for (const h of leakyAsyncHooks(settingsSources(mainDir))) {
       process.stderr.write(`sapu-contract: WARNING async tool hook that does not skip subagents (${h}): its output for every workflow agent's tool call lands in the orchestrator's context. Make it exit at once when its stdin JSON has "agent_id", or drop async.\n`);

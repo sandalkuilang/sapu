@@ -93,7 +93,7 @@ Examples: 🔴 with a full design and no open questions → `sapu:sapu-sonnet-hi
 ### Verification — two levels, skill-wide
 
 Always in that branch's worktree (A4 / brief point 3), never in `<MAIN>`:
-- **Fast** (during the fix loop): contract `gate.fast` + tests touching the diff (profile `worker.md`).
+- **Fast** (once per lane; the guard refuses a second run): contract `gate.fast` + tests touching the diff (profile `worker.md`).
 - **Merge gate**: contract `gate.merge` at the PR's tip commit, through `sapu-merge.sh` (A5) — never run by hand. `--workers N` per profile §Verification (default: `lanes`' `gateWorkers`; its `gateWorkersBeside` while a worker runs tests). Never lower it to dodge flakes. CPU priority stays low; never dispatch new workers while the gate runs at full load. A summary line matching contract `gate.redIf` (e.g. a SKIPPED DB-based check) = red, not green. The per-gate pass/fail/skipped summary goes in a PR comment. Gate red → never merge. External CI signal: profile §Verification.
 
 ## Phase A — Drain all open PRs

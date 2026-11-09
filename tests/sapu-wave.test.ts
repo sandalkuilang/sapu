@@ -1842,9 +1842,7 @@ describe("sapu-wave — 2.22.0 review fixes", () => {
     expect(fixes).toHaveLength(3);
     expect(fixes[2].prompt).toContain("sweep every file this PR changed that is in no fixer's group");
     expect(fixes[0].prompt).not.toContain("sweep every file");
-    expect(fixes[0].prompt).toContain("You are not the round's last fixer: run your diff tests only and skip gate.fast");
-    expect(fixes[1].prompt).toContain("skip gate.fast");
-    expect(fixes[2].prompt).not.toContain("skip gate.fast");
+    for (const f of fixes) expect(f.prompt).toContain("gate.fast already ran for this lane, once, when the builder handed the branch on");
   });
 
   it("a sliced plan over the cap: the builder finds its slice by heading, not limit 400", async () => {

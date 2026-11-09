@@ -2168,3 +2168,19 @@ describe("sapu-merge.sh — --gate-change: the orchestrator lets a PR that chang
     expect(r.err).toMatch(/gate setup failed \(not a PR defect\): .*--gate-change cannot help a gate that does not start/);
   });
 });
+
+describe("gate.select: a lane's PR runs the diff's own gate, the whole one is the batch's", () => {
+  const gate = { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", select: "scripts/gate.sh --select", summaryStart: "^Gate summary", redIf: "^⊘" };
+  const plan = (closes: string) => harness({ contract: { gate } }).run({}, ["--dry-run", "--closes", closes]).err;
+
+  it("any lane PR (--closes N or none) runs gate.select; a PR with no flag runs gate.merge", () => {
+    expect(plan("none")).toMatch(/gate in .*: scripts\/gate\.sh --select/);
+    expect(plan("7")).toMatch(/gate in .*: scripts\/gate\.sh --select/);
+    expect(harness({ contract: { gate } }).run({}, ["--dry-run"]).err).not.toMatch(/gate in .*--select/);
+  });
+
+  it("without gate.select, a lane PR still runs gate.merge", () => {
+    const { select: _s, ...plain } = gate;
+    expect(harness({ contract: { gate: plain } }).run({}, ["--dry-run", "--closes", "none"]).err).not.toMatch(/gate in .*--select/);
+  });
+});
