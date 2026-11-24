@@ -147,8 +147,9 @@ const HUNT_SCHEMA = {
     known_gaps_reconfirmed: { type: 'array', items: { type: 'integer' }, description: 'open known-gap issues (security-epic children, or open security issues) this cycle re-observed as still open' },
     idor_coverage: {
       type: 'object',
-      description: 'object-ownership (BOLA/IDOR) coverage when the authorization pass ran, from scripts/nemesis-cli.mjs coverage: probed vs total id-bearing endpoints and how many were left uncovered',
-      properties: { probed: { type: 'integer' }, total: { type: 'integer' }, uncovered: { type: 'integer' } },
+      description: 'object-ownership (BOLA/IDOR) coverage when the authorization pass ran, from scripts/nemesis-cli.mjs coverage: probed vs total id-bearing endpoints, complete only when that run exited 0, and the uncovered, weak and off-surface counts',
+      properties: { probed: { type: 'integer' }, total: { type: 'integer' }, complete: { type: 'boolean' }, uncovered: { type: 'integer' }, weak: { type: 'integer' }, off_surface: { type: 'integer' } },
+      required: ['probed', 'total', 'complete'],
     },
     candidates_declined: { type: 'integer' },
   },
@@ -260,7 +261,7 @@ const nemesis = await agent(
   `Apply the skill's hard gate IN FULL before any active testing (the owner-signed ${MAIN}/.nemesis/authorization.yml: attestation, expiry, environments_allowed, the resolved-address host floor, and the ${MAIN}/.nemesis/STOP kill switch) -- non-negotiable, never skip it or proceed past a failure; ` +
   'when it fails, do exactly what the skill says for a failed gate and return status "blocked" with the reason. ' +
   'This runs last, after momus and argus -- so anything unusual you observe is more likely your own probing than a pre-existing bug, but verify that, don\'t assume it. ' +
-  'When the authorization pass runs, record its object-ownership probes and prove coverage with scripts/nemesis-cli.mjs coverage (its § Seven bypass classes): return probed/total and the uncovered count in idor_coverage, file each leak it lists, and never report a "held" authorization verdict over endpoints it left untested. ' +
+  'When the authorization pass runs, record its object-ownership probes and prove coverage with scripts/nemesis-cli.mjs coverage (its § Seven bypass classes): return in idor_coverage probed/total, complete (true only when that run exited 0) and the uncovered, weak and off-surface counts, file each leak it lists, and never report a "held" authorization verdict over endpoints it left untested. ' +
   'File real GitHub issues per its own filing rules. Return the structured summary.' + SCOPE_BLOCK + SECURITY_BAR + PROCESS_GAPS_BLOCK,
   opts('nemesis', { label: 'nemesis', phase: 'Nemesis', schema: HUNT_SCHEMA }),
 )
