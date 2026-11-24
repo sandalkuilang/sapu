@@ -85,6 +85,7 @@ export const ENFORCEMENT_FILES: Readonly<Record<string, string>> = {
   "plugins/sapu/workflows/sapu-wave.js": "it runs every wave: workers, reviews, fix cycles",
   "plugins/sapu/scripts/sapu-cleanup.mjs": "it deletes branches and worktrees",
   "plugins/sapu/workflows/inspector.js": "it sequences momus, argus and nemesis and picks their models",
+  "plugins/sapu/scripts/nemesis-cli.mjs": "it is nemesis's coded host floor and its coverage proof",
   [BUDGET_FILE]: "it holds the engine scan and the context budgets",
   [GUARD_FILE]: "it is the rule guard itself",
   "tests/rule-guard.test.ts": "it proves the rule guard",

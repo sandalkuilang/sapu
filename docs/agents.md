@@ -49,7 +49,7 @@ Read-only research: researches 2–3 of nine technology domains per run (stalest
 
 ### /argus — autonomous QA
 
-One bounded cycle of eleven phases (ORIENT → ROTATE), applying five review lenses and six bypass classes. Every claim is graded by evidence tier and falsified before it becomes a de-duplicated GitHub issue. Tests, never fixes; the dev app and seeded accounts only.
+One bounded cycle of eleven phases (ORIENT → ROTATE), applying five review lenses and seven bypass classes. Every claim is graded by evidence tier and falsified before it becomes a de-duplicated GitHub issue. Tests, never fixes; the dev app and seeded accounts only.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/argus-dark.svg">
@@ -99,10 +99,10 @@ One pass across nine areas (A–I), each read with a security lens for outsiders
 
 ### /nemesis — authorized red-team
 
-Attacks the local dev app only. A hard gate — signed, unexpired authorization; allowlisted targets resolving to loopback (or an owner-attested private dev address); dev environments only; no STOP file — must pass before any active testing, and a kill switch halts the run mid-cycle. Then passes 0–7 from residue intake and recon through business logic to detection-integrity, plus six bypass classes every cycle. Files security issues; non-destructive, seeded low-privilege accounts only.
+Attacks the local dev app only. A hard gate — signed, unexpired authorization; allowlisted targets resolving to loopback (or an owner-attested private dev address); dev environments only; no STOP file — must pass before any active testing, and a kill switch halts the run mid-cycle. Then passes 0–7 from residue intake and recon through business logic to detection-integrity, plus seven bypass classes every cycle. Files security issues; non-destructive, seeded low-privilege accounts only.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/nemesis-dark.svg">
-  <img src="img/nemesis.svg" alt="nemesis: a hard gate, then passes 0 to 7 from residue intake and recon to detection-integrity with six bypass classes, filing security issues against the dev app only" width="100%">
+  <img src="img/nemesis.svg" alt="nemesis: a hard gate, then passes 0 to 7 from residue intake and recon to detection-integrity with seven bypass classes, filing security issues against the dev app only" width="100%">
 </picture>
 

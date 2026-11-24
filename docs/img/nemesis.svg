@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1110" width="920" height="1110" role="img" aria-label="nemesis red-teams the repo's local dev app only. A hard gate — signed, unexpired authorization; allowlisted targets resolving to loopback or an owner-attested private dev address; dev environments only; no STOP file — must pass before any active testing, and a kill switch halts the run mid-cycle. Then passes 0 to 7 from residue intake and recon through business logic to detection-integrity, with six bypass classes every cycle, filing security-labelled GitHub issues. Non-destructive, seeded low-privilege accounts only.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1110" width="920" height="1110" role="img" aria-label="nemesis red-teams the repo's local dev app only. A hard gate — signed, unexpired authorization; allowlisted targets resolving to loopback or an owner-attested private dev address; dev environments only; no STOP file — must pass before any active testing, and a kill switch halts the run mid-cycle. Then passes 0 to 7 from residue intake and recon through business logic to detection-integrity, with seven bypass classes every cycle, filing security-labelled GitHub issues. Non-destructive, seeded low-privilege accounts only.">
   <title>/nemesis — authorized red-team, dev only</title>
-  <desc>nemesis attacks the repo's own dev environment only. A hard gate is checked at every cycle start, before any active testing: an owner-signed, non-expired authorization.yml with an explicit attestation; every target on the allowlist and passing the host floor on its resolved address (loopback, or a private address the owner-signed file names and marks dev; any public address refused), with every production domain on scope.forbidden; dev environments only; and no .nemesis/STOP file. Any failure means file a BLOCKED issue and stop. Separately, a kill switch halts a running cycle (authorization invalid or expired, a target resolving off-allowlist or to a public or unknown address, a prohibited action needed, an anomaly or error-rate spike, a single-packet batch behaving unexpectedly, or a STOP file) and files a HALT issue. The methodology runs Pass 0 residue intake, Pass 1 recon and multi-tier surface, Pass 2 auth/session/step-up, Pass 3 authorization (highest value), Pass 4 injection, Pass 5 business logic (where the money is), Pass 6 API/config hygiene, Pass 7 detection-integrity, then triage and filing. Six bypass classes A to F run every domain every cycle, for outsider and insider alike. It files security-labelled GitHub issues naming the file and seam, keeps state under .nemesis/, and hands findings to /forge, which puts almost all in its red tier. Fix-mode is off by default.</desc>
+  <desc>nemesis attacks the repo's own dev environment only. A hard gate is checked at every cycle start, before any active testing: an owner-signed, non-expired authorization.yml with an explicit attestation; every target on the allowlist and passing the host floor on its resolved address (loopback, or a private address the owner-signed file names and marks dev; any public address refused), with every production domain on scope.forbidden; dev environments only; and no .nemesis/STOP file. Any failure means file a BLOCKED issue and stop. Separately, a kill switch halts a running cycle (authorization invalid or expired, a target resolving off-allowlist or to a public or unknown address, a prohibited action needed, an anomaly or error-rate spike, a single-packet batch behaving unexpectedly, or a STOP file) and files a HALT issue. The methodology runs Pass 0 residue intake, Pass 1 recon and multi-tier surface, Pass 2 auth/session/step-up, Pass 3 authorization (highest value), Pass 4 injection, Pass 5 business logic (where the money is), Pass 6 API/config hygiene, Pass 7 detection-integrity, then triage and filing. Seven bypass classes A to G run every domain every cycle, for outsider and insider alike. It files security-labelled GitHub issues naming the file and seam, keeps state under .nemesis/, and hands findings to /forge, which puts almost all in its red tier. Fix-mode is off by default.</desc>
   <style>
     text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
@@ -117,37 +117,42 @@
   <path d="M254,509 L278,509" class="ar-g" marker-end="url(#mg)"/>
   <rect x="282" y="494" width="140" height="30" rx="15" class="k-green" />
   <text x="352" y="514" class="tb c-green" text-anchor="middle">File issues</text>
-  <text x="32" y="558" class="lbl">SIX BYPASS CLASSES · EVERY DOMAIN, EVERY CYCLE · OUTSIDER + INSIDER</text>
-  <rect x="32" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <text x="32" y="558" class="lbl">SEVEN BYPASS CLASSES · EVERY DOMAIN, EVERY CYCLE · OUTSIDER + INSIDER</text>
+  <rect x="32" y="570" width="115.42857142857143" height="84" rx="12" class="card" filter="url(#sh)"/>
   <circle cx="57" cy="594" r="11" fill="url(#brand)"/>
   <text x="57" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">A</text>
-  <text x="46" y="626" class="tb">window direction</text>
-  <text x="46" y="644" class="cap">latest-dated first</text>
-  <rect x="176" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
-  <circle cx="201" cy="594" r="11" fill="url(#brand)"/>
-  <text x="201" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">B</text>
-  <text x="190" y="626" class="tb">TOCTOU</text>
-  <text x="190" y="644" class="cap">concurrent requests</text>
-  <rect x="320" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
-  <circle cx="345" cy="594" r="11" fill="url(#brand)"/>
-  <text x="345" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">C</text>
-  <text x="334" y="626" class="tb">no re-check</text>
-  <text x="334" y="644" class="cap">at execution</text>
-  <rect x="464" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
-  <circle cx="489" cy="594" r="11" fill="url(#brand)"/>
-  <text x="489" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">D</text>
-  <text x="478" y="626" class="tb">splitting</text>
-  <text x="478" y="644" class="cap">second route</text>
-  <rect x="608" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
-  <circle cx="633" cy="594" r="11" fill="url(#brand)"/>
-  <text x="633" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">E</text>
-  <text x="622" y="626" class="tb">UI-only</text>
-  <text x="622" y="644" class="cap">hit the API</text>
-  <rect x="752" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
-  <circle cx="777" cy="594" r="11" fill="url(#brand)"/>
-  <text x="777" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">F</text>
-  <text x="766" y="626" class="tb">actor = subject</text>
-  <text x="766" y="644" class="cap">value from body</text>
+  <text x="46" y="626" class="tb">window dir</text>
+  <text x="46" y="644" class="cap">latest first</text>
+  <rect x="155.42857142857144" y="570" width="115.42857142857143" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="180.42857142857144" cy="594" r="11" fill="url(#brand)"/>
+  <text x="180.42857142857144" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">B</text>
+  <text x="169.42857142857144" y="626" class="tb">TOCTOU</text>
+  <text x="169.42857142857144" y="644" class="cap">concurrent</text>
+  <rect x="278.8571428571429" y="570" width="115.42857142857143" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="303.8571428571429" cy="594" r="11" fill="url(#brand)"/>
+  <text x="303.8571428571429" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">C</text>
+  <text x="292.8571428571429" y="626" class="tb">no re-check</text>
+  <text x="292.8571428571429" y="644" class="cap">at execution</text>
+  <rect x="402.2857142857143" y="570" width="115.42857142857143" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="427.2857142857143" cy="594" r="11" fill="url(#brand)"/>
+  <text x="427.2857142857143" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">D</text>
+  <text x="416.2857142857143" y="626" class="tb">splitting</text>
+  <text x="416.2857142857143" y="644" class="cap">second route</text>
+  <rect x="525.7142857142858" y="570" width="115.42857142857143" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="550.7142857142858" cy="594" r="11" fill="url(#brand)"/>
+  <text x="550.7142857142858" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">E</text>
+  <text x="539.7142857142858" y="626" class="tb">UI-only</text>
+  <text x="539.7142857142858" y="644" class="cap">hit the API</text>
+  <rect x="649.1428571428571" y="570" width="115.42857142857143" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="674.1428571428571" cy="594" r="11" fill="url(#brand)"/>
+  <text x="674.1428571428571" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">F</text>
+  <text x="663.1428571428571" y="626" class="tb">actor=subject</text>
+  <text x="663.1428571428571" y="644" class="cap">value from body</text>
+  <rect x="772.5714285714286" y="570" width="115.42857142857143" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="797.5714285714286" cy="594" r="11" fill="url(#brand)"/>
+  <text x="797.5714285714286" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">G</text>
+  <text x="786.5714285714286" y="626" class="tb">ownership</text>
+  <text x="786.5714285714286" y="644" class="cap">another's row</text>
   <rect x="32" y="676" width="856" height="66" rx="14" class="k-green" />
   <rect x="48" y="692" width="34" height="34" rx="9.5625" class="tile-green"/>
   <g transform="translate(54.375,698.375) scale(0.8854166666666667)"><path d="M5 21V4 M5 4.5h11l-2 4 2 4H5" class="ico s-green"/></g>

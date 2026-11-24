@@ -60,9 +60,9 @@ export default {
 
     // bypass
     const by = ty + 64;
-    s += text(32, by, "SIX BYPASS CLASSES · EVERY DOMAIN, EVERY CYCLE · OUTSIDER + INSIDER", "lbl");
-    const B = [["A", "window direction", "latest-dated first"], ["B", "TOCTOU", "concurrent requests"], ["C", "no re-check", "at execution"], ["D", "splitting", "second route"], ["E", "UI-only", "hit the API"], ["F", "actor = subject", "value from body"]];
-    const bw = (856 - 5 * 8) / 6;
+    s += text(32, by, "SEVEN BYPASS CLASSES · EVERY DOMAIN, EVERY CYCLE · OUTSIDER + INSIDER", "lbl");
+    const B = [["A", "window dir", "latest first"], ["B", "TOCTOU", "concurrent"], ["C", "no re-check", "at execution"], ["D", "splitting", "second route"], ["E", "UI-only", "hit the API"], ["F", "actor=subject", "value from body"], ["G", "ownership", "another's row"]];
+    const bw = (856 - 6 * 8) / 7;
     B.forEach(([k, t, sub], i) => {
       const x = 32 + i * (bw + 8);
       s += card(x, by + 12, bw, 84, "card", 12);
