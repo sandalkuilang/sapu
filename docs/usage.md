@@ -690,6 +690,12 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.36.4
+
+Nothing to change in your contract: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
+- **A seventh bypass class — G, object ownership (BOLA/IDOR).** The canonical class list in your repo's CLAUDE.md / profile §Bypass classes is now A–G; forge's inline review, argus and nemesis each run it. G means a row the caller may legitimately reach but that belongs to another subject (another tenant, user or higher-privileged role): the probe needs two seeded accounts, a positive control (the real owner still reaches the object), and a cross-subject swap against a real seeded row — a random or ghost id is never evidence.
+- **nemesis proves its authorization coverage instead of asserting it.** The cycle records each object-ownership probe in `.nemesis/state/coverage.json` as observed facts — two distinct accounts, `object_source: "seeded"`, the owner's own `owner_status` (2xx, the positive control), the other subject's `foreign_status` and `outcome` (`denied` or `leaked`) — and the id-bearing endpoints it should reach in `.nemesis/state/surface.json` `id_bearing`, then runs `node "$CLAUDE_PLUGIN_ROOT/scripts/nemesis-cli.mjs" coverage …`. It prints `probed / total`, lists every leak to file (a found leak counts as probed), rejects a probe resting on a random id, a missing positive control or a single account, and names uncovered endpoints and probed endpoints the surface forgot; exit 0 complete, 1 not complete, 2 unreadable input. `/inspector` reports the `probed / total` in its summary. The engine host floor is also enforced in code: `nemesis-cli.mjs gate <url-or-host…>` reads an http(s), ws(s) or ftp URL (any number of slashes) and a bare host or `host:port` the way fetch and curl do, refuses a target they could read two ways (whitespace, a backslash, another scheme) and any that resolves to a public address or to nothing (exit 1), and lists a private address with its IP for nemesis to confirm against `authorization.yml` (exit 0). `id_bearing` is a list of `"METHOD /path"` strings; a 2xx that carried none of the object is recorded as `denied` with `foreign_body: "empty"`.
+
 #### Upgrading from a version before 2.36.3
 
 Nothing to change in your contract: start a new session, or run `/reload-plugins` in a running one. What behaves differently:

@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1040" width="920" height="1040" role="img" aria-label="argus runs one bounded QA cycle of eleven phases from ORIENT to ROTATE, applying five review lenses and six bypass classes, grading every claim by evidence tier and falsifying it before filing de-duplicated GitHub issues; it tests but never fixes, using seeded accounts on the dev app only, and keeps state under .argus/.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1040" width="920" height="1040" role="img" aria-label="argus runs one bounded QA cycle of eleven phases from ORIENT to ROTATE, applying five review lenses and seven bypass classes, grading every claim by evidence tier and falsifying it before filing de-duplicated GitHub issues; it tests but never fixes, using seeded accounts on the dev app only, and keeps state under .argus/.">
   <title>/argus — autonomous QA cycle</title>
-  <desc>One invocation is one bounded cycle of eleven phases: ORIENT, SELECT, INTAKE, CHARTER, EXECUTE, OBSERVE, MINIMIZE, TRIAGE, REPORT, PERSIST, ROTATE, each owing an artifact. Five lenses — User, PM, Senior QA, Auditor, Curator; the Auditor lens and bypass classes A to F run every cycle, and the Curator runs on rendered surfaces in live mode. Every claim is graded by evidence tier T1 to T4; S1 and S2 need at least one T1 observation, and each finding is falsified before filing. Output is de-duplicated GitHub issues fingerprinted by root cause, plus state under .argus/. argus tests but never fixes, works only the dev app with seeded accounts, and static mode caps severity at S3.</desc>
+  <desc>One invocation is one bounded cycle of eleven phases: ORIENT, SELECT, INTAKE, CHARTER, EXECUTE, OBSERVE, MINIMIZE, TRIAGE, REPORT, PERSIST, ROTATE, each owing an artifact. Five lenses — User, PM, Senior QA, Auditor, Curator; the Auditor lens and bypass classes A to G run every cycle, and the Curator runs on rendered surfaces in live mode. Every claim is graded by evidence tier T1 to T4; S1 and S2 need at least one T1 observation, and each finding is falsified before filing. Output is de-duplicated GitHub issues fingerprinted by root cause, plus state under .argus/. argus tests but never fixes, works only the dev app with seeded accounts, and static mode caps severity at S3.</desc>
   <style>
     text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#dbe3ee}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
@@ -80,7 +80,7 @@
   <text x="70" y="551" class="chipt c-violet" text-anchor="middle">C</text>
   <text x="92" y="542" class="t"><tspan class="tb">Curator</tspan><tspan class="muted"> — </tspan>rendered surface</text>
   <text x="92" y="561" class="cap c-blue">live mode only · measured</text>
-  <text x="48" y="618" class="t"><tspan class="tb">+ six bypass classes A–F</tspan>, every cycle</text>
+  <text x="48" y="618" class="t"><tspan class="tb">+ seven bypass classes A–G</tspan>, every cycle</text>
   <rect x="364" y="196" width="524" height="444" rx="14" class="card" filter="url(#sh)"/>
   <rect x="380" y="212" width="36" height="36" rx="10.125" fill="url(#brand)"/>
   <g transform="translate(386.75,218.75) scale(0.9375)"><path d="M20 12a8 8 0 1 1-2.4-5.7 M20 4v4.5h-4.5" class="ico ico-w"/></g>

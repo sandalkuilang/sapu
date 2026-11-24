@@ -34,7 +34,7 @@ export default {
       s += text(92, yy + (tag ? 22 : 32), `${b(n)}${c(" — ", "muted")}${what}`, "t");
       if (tag) s += text(92, yy + 41, tag[0], `cap c-${tag[1]}`);
     });
-    s += text(48, y + h - 22, `${b("+ six bypass classes A–F")}, every cycle`, "t");
+    s += text(48, y + h - 22, `${b("+ seven bypass classes A–G")}, every cycle`, "t");
 
     // cycle
     const cx0 = 32 + lw + 16, cw = 888 - cx0;
